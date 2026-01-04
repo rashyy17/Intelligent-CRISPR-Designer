@@ -5,6 +5,7 @@ import { Queue } from 'bullmq';
 import { GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI } from "@langchain/google-genai"; 
 import { QdrantVectorStore } from '@langchain/qdrant'; 
 import dotenv from 'dotenv';
+import { ChatGroq } from "@langchain/groq";
 // Load .env located next to this file (works regardless of current working directory)
 dotenv.config({ path: new URL('./.env', import.meta.url).pathname });
 
@@ -51,9 +52,9 @@ const queue = new Queue("file-upload-queue", {
 
 app.get('/chat', async (req, res) => {
   try {
-    const userQuery = 'when is the flight';
+    const userQuery = req.query.message;
 
-    // 1. RETRIEVER LOGIC
+    // 1. Keep Gemini for Embeddings (since this works fine for you)
     const embeddings = new GoogleGenerativeAIEmbeddings({
       model: "text-embedding-004",
       apiKey: process.env.GOOGLE_API_KEY,
@@ -64,44 +65,29 @@ app.get('/chat', async (req, res) => {
       collectionName: "langchainjs-testing",
     });
 
-    const retriever = vectorStore.asRetriever({ k: 2 });
-    const result = await retriever.invoke(userQuery);
+    const result = await vectorStore.asRetriever({ k: 2 }).invoke(userQuery);
     const context = result.map(d => d.pageContent).join("\n\n");
 
-    // 2. LLM INITIALIZATION
-    const llm = new ChatGoogleGenerativeAI({
-      modelName: "gemini-3-flash-preview", // 👈 Use the 2026 model from your list
-      apiKey: process.env.GOOGLE_API_KEY,
-      maxRetries: 0, // IMPORTANT: Prevents the internal loop that causes the 'replace' crash
+    // 2. INITIALIZE GROQ (Instead of Gemini LLM)
+    const llm = new ChatGroq({
+  apiKey: process.env.GROQ_API_KEY,
+  model: "llama-3.1-8b-instant", // Correct property
+  temperature: 0.1,
+});
+
+    // 3. INVOKE GROQ
+    const response = await llm.invoke([
+      { role: "system", content: "Answer strictly based on the provided context." },
+      { role: "user", content: `Context:\n${context}\n\nQuestion: ${userQuery}` }
+    ]);
+
+    return res.json({
+      answer: response.content,
+      docs: result
     });
 
-    // 3. DEFENSIVE INVOKE
-    let response;
-    try {
-      response = await llm.invoke([
-        { role: "system", content: "Answer only using context." },
-        { role: "user", content: `Context:\n${context}\n\nQuestion: ${userQuery}` }
-      ]);
-    } catch (apiError) {
-      // This block catches the 429 before the server crashes
-      if (apiError.message.includes("429") || apiError.message.includes("quota")) {
-        return res.status(429).json({
-          error: "Gemini Quota Exceeded",
-          message: "Your project limit is 0. Please link a billing account in AI Studio settings."
-        });
-      }
-      throw apiError; // Pass other errors to the main catch block
-    }
-
-    // 4. FINAL GUARD
-    if (!response || !response.content) {
-      return res.status(500).json({ error: "AI returned empty content." });
-    }
-
-    return res.json({ answer: response.content, docs: result });
-
   } catch (error) {
-    console.error("Critical Crash Prevented:", error.message);
+    console.error("Groq RAG Error:", error.message);
     return res.status(500).json({ error: "Server Error", details: error.message });
   }
 });
