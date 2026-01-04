@@ -22,6 +22,7 @@ const worker = new Worker('file-upload-queue', async (job) => {
 
 
     //3. Create embeddings
+   
     const embeddings = new GoogleGenerativeAIEmbeddings({
     model: "text-embedding-004",
     apiKey: "AIzaSyCTzdu7rtKN-qzcbPBA9W8uRJzMdusR5SM",

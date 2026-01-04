@@ -1,69 +1,112 @@
-import express from 'express';
-import cors from 'cors';
-import multer from 'multer';
+import express from 'express'; 
+import cors from 'cors'; 
+import multer from 'multer'; 
 import { Queue } from 'bullmq'; 
-import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai"; 
-import { QdrantVectorStore } from '@langchain/qdrant';
+import { GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI } from "@langchain/google-genai"; 
+import { QdrantVectorStore } from '@langchain/qdrant'; 
+import dotenv from 'dotenv';
+// Load .env located next to this file (works regardless of current working directory)
+dotenv.config({ path: new URL('./.env', import.meta.url).pathname });
 
+const app = express(); 
+const port = 8000; 
+// Startup info (do not log secrets)
+console.log('ENV loaded. GOOGLE_API_KEY present?', !!process.env.GOOGLE_API_KEY);
+console.log('Using GOOGLE_MODEL=', process.env.GOOGLE_MODEL || 'models/chat-bison-001');
 
+app.use(cors()); 
 
-const app = express();
-const port = 8000;
-app.use(cors());
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, 'uploads/')
-  },
-  filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9)
+const storage = multer.diskStorage({ 
+  destination: function (req, file, cb) { 
+    cb(null, 'uploads/') 
+  }, 
+  filename: function (req, file, cb) { 
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9) 
     cb(null, uniqueSuffix+ '-' +file.originalname) 
-  }
-})
+  } 
+}) 
 
-const upload = multer({ storage: storage })
-app.get('/',(req,res)=>{
-    return res.json({status: 'Server is running'});
-});
-app.post('/upload/pdf', upload.single('pdf'), async (req, res) => {
-  await queue.add("file-ready", JSON.stringify({filePath: req.file.path}) );
-    return res.json({status: 'PDF uploaded successfully', file: req.file,
-      filename: req.file.filename,
-      destination: req.file.destination,
-    });
-});
+const upload = multer({ storage: storage }) 
 
+app.get('/',(req,res)=>{ 
+  return res.json({status: 'Server is running'}); 
+}); 
 
+app.post('/upload/pdf', upload.single('pdf'), async (req, res) => { 
+  await queue.add("file-ready", JSON.stringify({filePath: req.file.path}) ); 
+  return res.json({
+    status: 'PDF uploaded successfully', 
+    file: req.file,
+    filename: req.file.filename,
+    destination: req.file.destination,
+  }); 
+}); 
 
-const queue = new Queue("file-upload-queue", {connection:{
+const queue = new Queue("file-upload-queue", {
+  connection:{
     host: 'localhost',
     port: '6379'
-}});
+  }
+}); 
 
+app.get('/chat', async (req, res) => {
+  try {
+    const userQuery = 'when is the flight';
 
-app.get('/chat',async(req,res)=>{
-    const userQuery='when is the flight';
-     const embeddings = new GoogleGenerativeAIEmbeddings({
-    model: "text-embedding-004",
-    apiKey: "AIzaSyCTzdu7rtKN-qzcbPBA9W8uRJzMdusR5SM",
+    // 1. RETRIEVER LOGIC
+    const embeddings = new GoogleGenerativeAIEmbeddings({
+      model: "text-embedding-004",
+      apiKey: process.env.GOOGLE_API_KEY,
     });
+
     const vectorStore = await QdrantVectorStore.fromExistingCollection(embeddings, {
-    url: 'http://localhost:6333',
-    collectionName: "langchainjs-testing",
+      url: 'http://localhost:6333',
+      collectionName: "langchainjs-testing",
+    });
+
+    const retriever = vectorStore.asRetriever({ k: 2 });
+    const result = await retriever.invoke(userQuery);
+    const context = result.map(d => d.pageContent).join("\n\n");
+
+    // 2. LLM INITIALIZATION
+    const llm = new ChatGoogleGenerativeAI({
+      modelName: "gemini-3-flash-preview", // 👈 Use the 2026 model from your list
+      apiKey: process.env.GOOGLE_API_KEY,
+      maxRetries: 0, // IMPORTANT: Prevents the internal loop that causes the 'replace' crash
+    });
+
+    // 3. DEFENSIVE INVOKE
+    let response;
+    try {
+      response = await llm.invoke([
+        { role: "system", content: "Answer only using context." },
+        { role: "user", content: `Context:\n${context}\n\nQuestion: ${userQuery}` }
+      ]);
+    } catch (apiError) {
+      // This block catches the 429 before the server crashes
+      if (apiError.message.includes("429") || apiError.message.includes("quota")) {
+        return res.status(429).json({
+          error: "Gemini Quota Exceeded",
+          message: "Your project limit is 0. Please link a billing account in AI Studio settings."
+        });
+      }
+      throw apiError; // Pass other errors to the main catch block
+    }
+
+    // 4. FINAL GUARD
+    if (!response || !response.content) {
+      return res.status(500).json({ error: "AI returned empty content." });
+    }
+
+    return res.json({ answer: response.content, docs: result });
+
+  } catch (error) {
+    console.error("Critical Crash Prevented:", error.message);
+    return res.status(500).json({ error: "Server Error", details: error.message });
+  }
 });
-const ret=vectorStore.asRetriever({
-  k:2
-});
-const result=await ret.invoke(userQuery);
-return res.json({result});
-});
-const SYS_PROMPT=`
-You are a helpful AI assistant that helps people find information 
-about their documents.
-Context:${JSON.stringify(result)}
-`;
-app.listen(port, () => {
-  console.log(`Server is running on http://localhost:${port}`);
-});  
 
 
-                                                                 
+app.listen(port, () => { 
+  console.log(`Server is running on http://localhost:${port}`); 
+});
