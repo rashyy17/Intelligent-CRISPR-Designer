@@ -1,11 +1,19 @@
 # env files
 .env
 server/.env
+client/.env
 
 # dependencies
 node_modules
 server/node_modules
 client/node_modules
+bio-engine/venv
+
+# build outputs
+client/.next
+
+# clerk generated
+client/.clerk
 
 # uploads
 uploads
@@ -13,3 +21,7 @@ server/uploads
 
 # pnpm
 pnpm-lock.yaml
+
+# misc
+.DS_Store
+*.log
