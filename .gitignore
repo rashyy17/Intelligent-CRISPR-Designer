@@ -1,15 +1,26 @@
-# env files
+# env files (secrets — never commit)
 .env
 server/.env
+client/.env
 
 # dependencies
 node_modules
 server/node_modules
 client/node_modules
 
-# uploads
+# python
+venv
+bio-engine/venv
+__pycache__
+*.pyc
+
+# next.js build
+.next
+client/.next
+
+# uploads (PDFs)
 uploads
 server/uploads
 
-# pnpm
-pnpm-lock.yaml
+# os junk
+.DS_Store
